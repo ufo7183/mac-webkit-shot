@@ -2,6 +2,9 @@ name: Mac WebKit Screenshot
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/mac-webkit-shot
 
 jobs:
   screenshot:
