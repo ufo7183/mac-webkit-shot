@@ -59,7 +59,7 @@ await afterPage.route(
   },
 );
 await preparePage(afterPage);
-await afterPage.mouse.move(800, 400);
+await afterPage.mouse.move(10, 400);
 await afterPage.waitForTimeout(1200);
 
 await afterPage.screenshot({
@@ -95,7 +95,7 @@ async function preparePage(currentPage) {
     const top = element.getBoundingClientRect().top + window.scrollY - 250;
     window.scrollTo(0, Math.max(0, top));
   });
-  await currentPage.mouse.move(800, 400);
+  await currentPage.mouse.move(10, 400);
   await currentPage.waitForTimeout(1200);
 }
 
