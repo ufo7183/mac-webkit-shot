@@ -26,6 +26,16 @@ const selectors = [
   '.elementor-element-ee73b5b',
   '.elementor-element-1609f56',
 ];
+const opticalFixCss = `
+  :is(
+    .elementor-element-dbacf91,
+    .elementor-element-ee73b5b,
+    .elementor-element-1609f56
+  ) .elementor-heading-title {
+    position: relative !important;
+    top: -12px !important;
+  }
+`;
 
 const before = await collectMetrics(page, selectors);
 
@@ -37,19 +47,18 @@ const afterPage = await browser.newPage({
   deviceScaleFactor: 2,
 });
 
+await afterPage.route(
+  '**/wp-content/uploads/elementor/css/post-1283.css*',
+  async (route) => {
+    const response = await route.fetch();
+    const body = await response.text();
+    await route.fulfill({
+      response,
+      body: `${body}\n${opticalFixCss}`,
+    });
+  },
+);
 await preparePage(afterPage);
-await afterPage.addStyleTag({
-  content: `
-    :is(
-      .elementor-element-dbacf91,
-      .elementor-element-ee73b5b,
-      .elementor-element-1609f56
-    ) .elementor-heading-title {
-      position: relative !important;
-      top: -12px !important;
-    }
-  `,
-});
 await afterPage.mouse.move(800, 400);
 await afterPage.waitForTimeout(1200);
 
