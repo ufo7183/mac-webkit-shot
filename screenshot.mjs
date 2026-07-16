@@ -15,16 +15,7 @@ const page = await browser.newPage({
   deviceScaleFactor: 2,
 });
 
-await page.goto(url, { waitUntil: 'networkidle' });
-await page.evaluate(async () => {
-  await document.fonts.ready;
-});
-
-await page.locator('[data-id="06badf4"]').evaluate((element) => {
-  const top = element.getBoundingClientRect().top + window.scrollY - 250;
-  window.scrollTo(0, Math.max(0, top));
-});
-await page.waitForTimeout(1200);
+await preparePage(page);
 
 await page.screenshot({
   path: `${outputDirectory}/mac-webkit-before.png`,
@@ -38,7 +29,16 @@ const selectors = [
 
 const before = await collectMetrics(page, selectors);
 
-await page.addStyleTag({
+const afterPage = await browser.newPage({
+  viewport: {
+    width: 1136,
+    height: 1129,
+  },
+  deviceScaleFactor: 2,
+});
+
+await preparePage(afterPage);
+await afterPage.addStyleTag({
   content: `
     :is(
       .elementor-element-dbacf91,
@@ -50,14 +50,15 @@ await page.addStyleTag({
     }
   `,
 });
-await page.waitForTimeout(300);
+await afterPage.mouse.move(800, 400);
+await afterPage.waitForTimeout(1200);
 
-await page.screenshot({
+await afterPage.screenshot({
   path: `${outputDirectory}/mac-webkit-after-12px.png`,
 });
 
-const after = await collectMetrics(page, selectors);
-const environment = await page.evaluate(() => ({
+const after = await collectMetrics(afterPage, selectors);
+const environment = await afterPage.evaluate(() => ({
   devicePixelRatio: window.devicePixelRatio,
   platform: navigator.platform,
   userAgent: navigator.userAgent,
@@ -74,6 +75,20 @@ await writeFile(
 );
 
 await browser.close();
+
+async function preparePage(currentPage) {
+  await currentPage.goto(url, { waitUntil: 'networkidle' });
+  await currentPage.evaluate(async () => {
+    await document.fonts.ready;
+  });
+
+  await currentPage.locator('[data-id="06badf4"]').evaluate((element) => {
+    const top = element.getBoundingClientRect().top + window.scrollY - 250;
+    window.scrollTo(0, Math.max(0, top));
+  });
+  await currentPage.mouse.move(800, 400);
+  await currentPage.waitForTimeout(1200);
+}
 
 async function collectMetrics(currentPage, widgetSelectors) {
   return currentPage.evaluate((items) => {
