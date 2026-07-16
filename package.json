@@ -1,0 +1,12 @@
+{
+  "name": "mac-webkit-shot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "shot": "node screenshot.mjs"
+  },
+  "devDependencies": {
+    "playwright": "latest"
+  }
+}
