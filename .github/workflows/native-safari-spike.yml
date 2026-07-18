@@ -1,0 +1,69 @@
+name: Native Safari Capture Spike
+
+# C1 生死閘門：驗證原生 Safari／safaridriver／Retina DPR／整頁長截圖是否可行。
+# 規格正本：D:\AIproject\harness-upgrade\plans\SDD-mac-safari-capture.md §6、§7。
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: '要擷取的公開網址（僅接受 http/https，不含帳密／私網）'
+        required: false
+        default: 'https://zemeei.56855685.xyz/'
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Record environment versions
+        run: |
+          {
+            echo "=== sw_vers ==="
+            sw_vers
+            echo "=== safaridriver --version ==="
+            /usr/bin/safaridriver --version || true
+            echo "=== python3 --version ==="
+            python3 --version
+          } | tee versions.txt
+
+      - name: Enable Safari WebDriver (non-interactive)
+        run: sudo -n /usr/bin/safaridriver --enable
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements-spike.txt
+
+      - name: Run native Safari spike
+        id: spike
+        env:
+          SPIKE_TARGET_URL: ${{ inputs.target_url }}
+        run: python3 spikes/native_safari_spike.py
+
+      - name: Move version log into output directory
+        if: always()
+        run: |
+          mkdir -p spike-output
+          cp versions.txt spike-output/versions.txt || true
+
+      - name: Upload spike artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-safari-spike-${{ github.run_id }}
+          path: spike-output/
+          retention-days: 7
+          if-no-files-found: warn
