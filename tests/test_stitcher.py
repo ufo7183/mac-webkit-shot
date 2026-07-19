@@ -1,0 +1,175 @@
+"""native_capture.stitcher 與 page_prepare 的測試：正常拼接、尾段重疊、DPR2、
+頁高變動、超高頁、fixed/sticky、尺寸不一致。stitch()／verify_stitched_dimensions()
+是純函式，不需要真實 Selenium；capture_segments()／prescroll_until_stable() 用
+FakeDriver 模擬 execute_script 回傳值。
+"""
+
+from __future__ import annotations
+
+import io
+import re
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+from native_capture.page_prepare import PagePrepareError, prescroll_until_stable
+from native_capture.stitcher import StitchError, capture_segments, stitch, verify_stitched_dimensions
+
+
+def _solid_image(width: int, height: int, color: tuple[int, int, int]) -> Image.Image:
+    return Image.new("RGB", (width, height), color)
+
+
+def _seg(index: int, actual_scroll_y: int, inner_w: int, inner_h: int, png_w: int, png_h: int) -> dict:
+    return {
+        "index": index,
+        "requested_scroll_y": actual_scroll_y,
+        "actual_scroll_y": actual_scroll_y,
+        "inner_width": inner_w,
+        "inner_height": inner_h,
+        "png_width": png_w,
+        "png_height": png_h,
+    }
+
+
+class TestStitchNormal:
+    def test_two_segments_no_overlap(self) -> None:
+        img0 = _solid_image(800, 600, (255, 0, 0))
+        img1 = _solid_image(800, 600, (0, 255, 0))
+        segments = [_seg(0, 0, 800, 600, 800, 600), _seg(1, 600, 800, 600, 800, 600)]
+        canvas = stitch([img0, img1], segments, dpr=1, page_height_css=1200)
+        assert canvas.size == (800, 1200)
+        assert canvas.getpixel((10, 10)) == (255, 0, 0)
+        assert canvas.getpixel((10, 1190)) == (0, 255, 0)
+
+
+class TestStitchTailOverlap:
+    def test_second_segment_overlaps_first(self) -> None:
+        # 頁高只有 1000，第二段 requested/actual scrollY=400（viewport 600），
+        # 與第一段底部（600）重疊 200px，拼接必須裁掉重疊區域不留重複內容。
+        img0 = _solid_image(800, 600, (255, 0, 0))
+        img1 = _solid_image(800, 600, (0, 255, 0))
+        segments = [_seg(0, 0, 800, 600, 800, 600), _seg(1, 400, 800, 600, 800, 600)]
+        canvas = stitch([img0, img1], segments, dpr=1, page_height_css=1000)
+        assert canvas.size == (800, 1000)
+        # 重疊區域（y=400~600）拼接後應為第二段內容（後貼上者覆蓋）。
+        assert canvas.getpixel((10, 999)) == (0, 255, 0)
+        assert canvas.getpixel((10, 10)) == (255, 0, 0)
+
+
+class TestStitchDpr2:
+    def test_dpr2_scales_canvas_and_positions(self) -> None:
+        img0 = _solid_image(1600, 1200, (255, 0, 0))
+        img1 = _solid_image(1600, 1200, (0, 255, 0))
+        segments = [_seg(0, 0, 800, 600, 1600, 1200), _seg(1, 600, 800, 600, 1600, 1200)]
+        canvas = stitch([img0, img1], segments, dpr=2, page_height_css=1200)
+        assert canvas.size == (1600, 2400)
+        verify_stitched_dimensions(canvas, inner_width=800, dpr=2, page_height_css=1200)
+
+
+class TestStitchInconsistentSegmentSizes:
+    def test_last_segment_shorter(self) -> None:
+        img0 = _solid_image(800, 600, (255, 0, 0))
+        img1 = _solid_image(800, 200, (0, 255, 0))  # 尾段實際擷取較短。
+        segments = [_seg(0, 0, 800, 600, 800, 600), _seg(1, 600, 800, 200, 800, 200)]
+        canvas = stitch([img0, img1], segments, dpr=1, page_height_css=800)
+        assert canvas.size == (800, 800)
+
+
+class TestStitchFailClosed:
+    def test_no_images_raises(self) -> None:
+        with pytest.raises(StitchError, match="無任何 segment"):
+            stitch([], [], dpr=1, page_height_css=100)
+
+    def test_verify_dimensions_width_mismatch_raises(self) -> None:
+        canvas = _solid_image(797, 1000, (0, 0, 0))
+        with pytest.raises(StitchError, match="寬度"):
+            verify_stitched_dimensions(canvas, inner_width=800, dpr=1, page_height_css=1000)
+
+    def test_verify_dimensions_height_mismatch_raises(self) -> None:
+        canvas = _solid_image(800, 990, (0, 0, 0))
+        with pytest.raises(StitchError, match="高度"):
+            verify_stitched_dimensions(canvas, inner_width=800, dpr=1, page_height_css=1000)
+
+    def test_verify_dimensions_within_1px_rounding_passes(self) -> None:
+        # 頁高變動：document height 由 999.6 四捨五入為 1000，允許 1px 誤差。
+        canvas = _solid_image(800, 999, (0, 0, 0))
+        verify_stitched_dimensions(canvas, inner_width=800, dpr=1, page_height_css=1000)
+
+
+class _ScrollFakeDriver:
+    """模擬 prescroll_until_stable 所需的 execute_script 回應。"""
+
+    def __init__(self, scroll_height: int) -> None:
+        self.scroll_height = scroll_height
+
+    def execute_script(self, script: str, *args) -> object:
+        if "document.body.scrollHeight" in script:
+            return self.scroll_height
+        if "document.documentElement.scrollHeight" in script:
+            return self.scroll_height
+        if "window.scrollTo" in script:
+            return None
+        raise AssertionError(f"未預期的 script：{script}")
+
+
+class TestPrescrollOversizedPage:
+    def test_raises_when_exceeds_max_height(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("native_capture.page_prepare.time.sleep", lambda _s: None)
+        driver = _ScrollFakeDriver(scroll_height=70000)
+        with pytest.raises(PagePrepareError, match="超過上限"):
+            prescroll_until_stable(driver, viewport_height=600)
+
+
+class _SegmentFakeDriver:
+    """模擬 capture_segments 所需的 execute_script／get_screenshot_as_png。"""
+
+    def __init__(self, png_bytes: bytes) -> None:
+        self._scroll_y = 0
+        self._png_bytes = png_bytes
+        self.hide_calls = 0
+        self.restore_calls = 0
+
+    def execute_script(self, script: str, *args) -> object:
+        if "window.scrollTo" in script:
+            match = re.search(r"window\.scrollTo\(0,\s*(\d+)\)", script)
+            self._scroll_y = int(match.group(1))
+            return None
+        if "window.scrollY" in script:
+            return self._scroll_y
+        if "innerWidth, window.innerHeight" in script:
+            return [800, 600]
+        if "removeProperty" in script:
+            self.restore_calls += 1
+            return None
+        if "data-native-capture-hidden" in script:
+            self.hide_calls += 1
+            return []
+        raise AssertionError(f"未預期的 script：{script}")
+
+    def get_screenshot_as_png(self) -> bytes:
+        return self._png_bytes
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (1, 2, 3)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TestCaptureSegmentsFixedSticky:
+    def test_hides_and_restores_after_first_segment_only(self, tmp_path: Path) -> None:
+        driver = _SegmentFakeDriver(_png_bytes(800, 600))
+        segments_dir = tmp_path / "segments"
+        segments, images, fixed_sticky = capture_segments(
+            driver, page_height_css=1400, viewport_height=600, segments_dir=segments_dir, settle_ms=0
+        )
+        assert len(segments) == 3
+        assert len(images) == 3
+        # 第一段（index 0）不觸發 hide；之後每段各觸發一次 hide/restore。
+        assert driver.hide_calls == 2
+        assert driver.restore_calls == 2
+        # fail-closed 前提：即使後續步驟失敗，segments 仍已落檔可供除錯。
+        saved = sorted(segments_dir.glob("segment-*.png"))
+        assert len(saved) == 3
