@@ -1,0 +1,56 @@
+"""Safari WebDriver session 建立與 capabilities 驗證（對應 SDD §6 硬閘 2、3）。
+
+沿用 C1 spike 已驗證過的 `webdriver.Safari()` 建立方式；只補上可重用的 capabilities
+檢查與 macOS 平台檢查函式，不改變 spike 已通過的行為。
+"""
+
+from __future__ import annotations
+
+import logging
+
+from selenium import webdriver
+from selenium.webdriver.safari.options import Options as SafariOptions
+
+logger = logging.getLogger("native_capture.safari_session")
+
+
+class SafariSessionError(RuntimeError):
+    """Safari session 建立或 capabilities 驗證失敗時拋出。"""
+
+
+def create_driver() -> webdriver.Safari:
+    """建立原生 Safari WebDriver session（假設外部已執行 safaridriver --enable）。"""
+    options = SafariOptions()
+    return webdriver.Safari(options=options)
+
+
+def assert_safari_capabilities(driver: webdriver.Safari) -> dict:
+    """驗證 capabilities.browserName 為 safari（大小寫不敏感），回傳可序列化的 capabilities 子集。
+
+    對應 SDD §6 硬閘 2：browserName 不是 safari 時視為硬閘失敗。
+    """
+    caps = driver.capabilities
+    browser_name = caps.get("browserName")
+    logger.info("session capabilities.browserName=%s", browser_name)
+    if (browser_name or "").lower() != "safari":
+        raise SafariSessionError(f"capabilities.browserName 不是 safari，實際為 {browser_name}")
+    return {k: v for k, v in caps.items() if isinstance(v, (str, int, float, bool))}
+
+
+def assert_macos_platform(driver: webdriver.Safari) -> str:
+    """驗證 navigator.platform 為 macOS 環境，回傳 platform 字串。
+
+    對應 SDD §6 硬閘 3：navigator.platform／capability 不是 macOS 環境時視為硬閘失敗。
+    """
+    platform = driver.execute_script("return navigator.platform")
+    if "Mac" not in (platform or ""):
+        raise SafariSessionError(f"navigator.platform 不是 macOS 環境，實際為 {platform}")
+    return platform
+
+
+def collect_environment_basics(driver: webdriver.Safari) -> dict:
+    """收集 environment 區塊需要的 navigator 基本資訊（user_agent／max_touch_points）。"""
+    return {
+        "user_agent": driver.execute_script("return navigator.userAgent"),
+        "max_touch_points": driver.execute_script("return navigator.maxTouchPoints"),
+    }
