@@ -328,7 +328,7 @@ def main() -> None:
         metrics["environment"]["capabilities"] = {
             k: v for k, v in caps.items() if isinstance(v, (str, int, float, bool))
         }
-        if browser_name != "safari":
+        if (browser_name or "").lower() != "safari":
             fail(f"capabilities.browserName 不是 safari，實際為 {browser_name}", metrics)
 
         driver.get(TARGET_URL)
