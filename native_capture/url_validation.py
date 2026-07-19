@@ -78,6 +78,6 @@ def mask_url_for_log(url: str) -> str:
     masked_query = ""
     if parts.query:
         pairs = parse_qsl(parts.query, keep_blank_values=True)
-        masked_query = urlencode([(key, "***") for key, _ in pairs])
+        masked_query = urlencode([(key, "***") for key, _ in pairs], safe="*")
 
     return urlunsplit((parts.scheme, netloc, parts.path, masked_query, ""))
