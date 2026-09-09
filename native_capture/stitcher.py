@@ -19,6 +19,7 @@ from native_capture.page_prepare import hide_pinned_fixed_sticky, restore_hidden
 logger = logging.getLogger("native_capture.stitcher")
 
 MAX_SEGMENTS = 200
+SEGMENT_OVERLAP_CSS_PX = 1
 
 
 class StitchError(RuntimeError):
@@ -123,6 +124,11 @@ def capture_segments(
     images: list[Image.Image] = []
     fixed_sticky_records: list[dict] = []
     max_scroll = max(0, page_height_css - viewport_height)
+    if viewport_height <= SEGMENT_OVERLAP_CSS_PX:
+        raise StitchError(
+            f"viewport 高度必須大於受控重疊 {SEGMENT_OVERLAP_CSS_PX}px：{viewport_height}"
+        )
+    scroll_step_css = viewport_height - SEGMENT_OVERLAP_CSS_PX
     scroll_y = 0
     previous_actual_y: float | None = None
     index = 0
@@ -187,7 +193,7 @@ def capture_segments(
         images.append(img)
         previous_actual_y = float(actual_scroll_y)
         logger.info(
-            "segment %d：requested=%d actual=%d png=%dx%d",
+            "segment %d：requested=%s actual=%s png=%dx%d",
             index, scroll_y, actual_scroll_y, img.width, img.height,
         )
 
@@ -196,7 +202,8 @@ def capture_segments(
         if len(segments) >= MAX_SEGMENTS:
             raise StitchError(f"已達 segment 上限 {MAX_SEGMENTS} 但仍未到底")
         index += 1
-        scroll_y = min(scroll_y + viewport_height, max_scroll)
+        # 以實際 scrollY 計算下一段，保留受控重疊，避免 Safari 每段第 0 列暗化落入成品。
+        scroll_y = min(actual_scroll_y + scroll_step_css, max_scroll)
 
     return segments, images, fixed_sticky_records
 
