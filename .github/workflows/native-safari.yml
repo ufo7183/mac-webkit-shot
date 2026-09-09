@@ -1,0 +1,146 @@
+name: Native Safari Capture
+
+run-name: Safari capture · ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Public HTTP(S) URL to capture.
+        required: true
+        type: string
+      request_id:
+        description: UUID used to identify this capture and artifact.
+        required: true
+        type: string
+      viewport_width:
+        description: Requested viewport width in CSS pixels.
+        required: true
+        default: '1136'
+        type: string
+      viewport_height:
+        description: Requested viewport height in CSS pixels.
+        required: true
+        default: '1129'
+        type: string
+      settle_ms:
+        description: Delay after each scroll in milliseconds.
+        required: true
+        default: '2000'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-15
+    timeout-minutes: 10
+    env:
+      NATIVE_CAPTURE_URL: ${{ inputs.url }}
+      NATIVE_CAPTURE_REQUEST_ID: ${{ inputs.request_id }}
+      NATIVE_CAPTURE_VIEWPORT_WIDTH: ${{ inputs.viewport_width }}
+      NATIVE_CAPTURE_VIEWPORT_HEIGHT: ${{ inputs.viewport_height }}
+      NATIVE_CAPTURE_SETTLE_MS: ${{ inputs.settle_ms }}
+      NATIVE_CAPTURE_OUTPUT_DIR: capture-output
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize capture output
+        run: mkdir -p capture-output/diagnostics
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Enable Safari WebDriver
+        id: enable_safari
+        continue-on-error: true
+        run: sudo -n /usr/bin/safaridriver --enable
+
+      - name: Record environment versions
+        if: always()
+        run: |
+          safari_version="$(/usr/bin/defaults read /Applications/Safari.app/Contents/Info CFBundleShortVersionString 2>/dev/null || true)"
+          {
+            echo "=== macOS ==="
+            sw_vers
+            echo "=== CPU architecture ==="
+            uname -m
+            echo "=== Safari ==="
+            echo "${safari_version:-unavailable}"
+            echo "=== SafariDriver ==="
+            /usr/bin/safaridriver --version 2>&1 || true
+            echo "=== Python ==="
+            python --version 2>&1 || true
+          } | tee capture-output/versions.txt
+
+      - name: Run formal native capture CLI
+        id: capture
+        continue-on-error: true
+        run: python -m native_capture.cli
+
+      - name: Verify successful capture bundle
+        id: verify_success
+        if: steps.capture.outcome == 'success'
+        run: |
+          test -s capture-output/safari-full-page.png
+          test -s capture-output/safari-first-viewport.png
+          test -s capture-output/metrics.json
+          test -s capture-output/versions.txt
+          test -s capture-output/preview/manifest.json
+          test -d capture-output/preview/tiles/
+          test "$(find capture-output/preview/tiles -maxdepth 1 -type f -name '*.png' | wc -l)" -gt 0
+
+      - name: Collect diagnostics
+        if: always()
+        env:
+          CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
+          SAFARI_ENABLE_OUTCOME: ${{ steps.enable_safari.outcome }}
+          BUNDLE_VERIFY_OUTCOME: ${{ steps.verify_success.outcome }}
+        run: |
+          mkdir -p capture-output/diagnostics
+          {
+            echo '{'
+            printf '  "request_id": "%s",\n' "$NATIVE_CAPTURE_REQUEST_ID"
+            printf '  "capture_step": "%s",\n' "${CAPTURE_OUTCOME:-not-run}"
+            printf '  "safari_enable_step": "%s",\n' "${SAFARI_ENABLE_OUTCOME:-not-run}"
+            printf '  "bundle_verify_step": "%s"\n' "${BUNDLE_VERIFY_OUTCOME:-not-run}"
+            echo '}'
+          } > capture-output/diagnostics/workflow.json
+
+          found=0
+          for root in "$HOME/Library/Logs" "$RUNNER_TEMP"; do
+            if [ -d "$root" ]; then
+              while IFS= read -r -d '' source; do
+                found=1
+                filename="$(basename "$source" | tr -c 'A-Za-z0-9._-' '_')"
+                sed -E \
+                  -e 's#https?://[^[:space:]"<>]+#<url-redacted>#g' \
+                  -e 's#([?&](token|key|secret|password|cookie)=)[^&[:space:]"<>]+#\1<redacted>#gi' \
+                  "$source" > "capture-output/diagnostics/safaridriver-${filename}" || true
+              done < <(find "$root" -maxdepth 4 -type f \( -iname '*safari*' -o -iname '*webdriver*' \) -print0 2>/dev/null)
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "No SafariDriver log file was exposed by the runner." > capture-output/diagnostics/safaridriver-logs-unavailable.txt
+          fi
+
+      - name: Upload capture artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: safari-capture-${{ inputs.request_id }}
+          path: capture-output/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Fail failed capture or bundle verification
+        if: always() && (steps.enable_safari.outcome == 'failure' || steps.capture.outcome == 'failure' || steps.verify_success.outcome == 'failure')
+        run: exit 1
