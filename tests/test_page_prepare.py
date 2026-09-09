@@ -44,6 +44,8 @@ if (mode === 'unsupported') {{
   ready = Promise.reject(new Error('font fixture rejection'));
 }} else if (mode === 'timeout') {{
   ready = new Promise(() => {{}});
+}} else if (mode === 'none') {{
+  ready = new Promise((resolve) => setTimeout(() => resolve(null), 5));
 }} else {{
   ready = new Promise((resolve) => setTimeout(resolve, 5));
 }}
@@ -52,7 +54,7 @@ const sandbox = {{
   Promise,
   setTimeout,
   clearTimeout,
-  arguments: [timeoutMs, (value) => callbacks.push(String(value))],
+  arguments: [timeoutMs, (value) => callbacks.push(value)],
 }};
 vm.runInNewContext(source, sandbox);
 setTimeout(() => {{
@@ -60,7 +62,7 @@ setTimeout(() => {{
     process.stderr.write('callback_count=' + callbacks.length);
     process.exit(2);
   }}
-  process.stdout.write(callbacks[0] + '|' + callbacks.length);
+  process.stdout.write(JSON.stringify({{value: callbacks[0], count: callbacks.length}}));
 }}, timeoutMs + 30);
 """
         result = subprocess.run(
@@ -71,9 +73,9 @@ setTimeout(() => {{
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "Node fixture failed")
-        status, count = result.stdout.strip().split("|")
-        self.callback_count = int(count)
-        return status
+        payload = json.loads(result.stdout.strip())
+        self.callback_count = payload["count"]
+        return payload["value"]
 
 
 def test_wait_ready_executes_async_fonts_script_and_accepts_only_loaded() -> None:
@@ -85,13 +87,18 @@ def test_wait_ready_executes_async_fonts_script_and_accepts_only_loaded() -> Non
     assert driver.callback_count == 1
 
 
-@pytest.mark.parametrize("mode", ["timeout", "reject", "unsupported"])
+@pytest.mark.parametrize("mode", ["timeout", "reject", "unsupported", "none"])
 def test_wait_ready_rejects_timeout_error_and_unsupported_status(mode: str) -> None:
     driver = _NodeFontsDriver(mode)
 
     with pytest.raises(PagePrepareError, match="字型|fonts.ready") as exc_info:
         wait_ready(driver, ready_timeout_s=1, fonts_timeout_ms=10)
 
-    expected_status = "timeout" if mode == "timeout" else ("unsupported" if mode == "unsupported" else "error")
+    expected_status = {
+        "timeout": "timeout",
+        "unsupported": "unsupported",
+        "reject": "error",
+        "none": None,
+    }[mode]
     assert exc_info.value.fonts_status == expected_status
     assert driver.callback_count == 1

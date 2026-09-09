@@ -219,3 +219,17 @@ def test_run_quit_failure_preserves_success_path_as_primary_failure(
     metrics = _read_metrics(tmp_path)
     assert metrics["stitch"]["status"] == "fail"
     assert any("quit fixture failure" in warning for warning in metrics["stitch"]["warnings"])
+
+
+def test_run_quit_failure_does_not_replace_capture_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_fixture_env(monkeypatch)
+    driver = _CliDriver(screenshot_width=7, quit_error=RuntimeError("quit fixture failure"))
+    monkeypatch.setattr(safari_session, "create_driver", lambda: driver)
+    monkeypatch.setattr(page_prepare, "wait_ready", lambda _driver: "loaded")
+
+    assert cli.run(tmp_path) != 0
+    warnings = _read_metrics(tmp_path)["stitch"]["warnings"]
+    assert "比例" in warnings[0]
+    assert any("quit fixture failure" in warning for warning in warnings[1:])

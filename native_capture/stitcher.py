@@ -127,9 +127,15 @@ def capture_segments(
         driver.execute_script(f"window.scrollTo(0, {scroll_y})")
         time.sleep(settle_ms / 1000.0)
         actual_scroll_y = driver.execute_script("return window.scrollY")
-        if not isinstance(actual_scroll_y, (int, float)) or isinstance(actual_scroll_y, bool):
+        if (
+            not isinstance(actual_scroll_y, (int, float))
+            or isinstance(actual_scroll_y, bool)
+            or not math.isfinite(float(actual_scroll_y))
+        ):
             raise StitchError(f"segment {index} actual_scroll_y 無效：{actual_scroll_y}")
-        if index == 0 and (actual_scroll_y < -1 or actual_scroll_y > 1):
+        if actual_scroll_y < -1 or actual_scroll_y > max_scroll + 1:
+            raise StitchError(f"segment {index} actual_scroll_y 超出頁面範圍：{actual_scroll_y}")
+        if index == 0 and actual_scroll_y > 1:
             raise StitchError(f"首段未從頁首開始：actual_scroll_y={actual_scroll_y}")
         if previous_actual_y is not None and actual_scroll_y <= previous_actual_y:
             raise StitchError(f"捲動停滯：segment {index} actual_scroll_y={actual_scroll_y}")
