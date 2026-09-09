@@ -83,7 +83,7 @@ def run(output_dir: Path | None = None) -> int:
             raise stitcher.StitchError(f"window.devicePixelRatio 異常：{dpr}")
 
         page_prepare.freeze_dynamics(driver)
-        page_height_css = page_prepare.prescroll_until_stable(driver, viewport_height)
+        page_height_css = page_prepare.prescroll_until_stable(driver, inner[1])
         metrics["document"].update(
             {
                 "title": driver.execute_script("return document.title"),
@@ -95,7 +95,7 @@ def run(output_dir: Path | None = None) -> int:
         )
 
         segments, images, fixed_sticky_records = stitcher.capture_segments(
-            driver, page_height_css, viewport_height, segments_dir, settle_ms
+            driver, page_height_css, inner[1], segments_dir, settle_ms
         )
         metrics["stitch"]["segments"] = segments
         metrics["stitch"]["segment_count"] = len(segments)
