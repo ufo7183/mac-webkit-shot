@@ -75,7 +75,7 @@ setTimeout(() => {{
             raise RuntimeError(result.stderr.strip() or "Node fixture failed")
         payload = json.loads(result.stdout.strip())
         self.callback_count = payload["count"]
-        return payload["value"]
+        return None if self.mode == "none" else payload["value"]
 
 
 def test_wait_ready_executes_async_fonts_script_and_accepts_only_loaded() -> None:
