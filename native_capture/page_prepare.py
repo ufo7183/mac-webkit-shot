@@ -15,6 +15,35 @@ MAX_PAGE_HEIGHT_CSS_PX = 60000
 class PagePrepareError(RuntimeError):
     """頁面預備階段任一硬條件失敗時拋出。"""
 
+    def __init__(self, message: str, *, fonts_status: str | None = None) -> None:
+        super().__init__(message)
+        self.fonts_status = fonts_status
+
+
+_WAIT_FONTS_SCRIPT = """
+var callback = arguments[arguments.length - 1];
+var timeoutMs = arguments[0];
+var settled = false;
+var timerId = null;
+
+function finish(status) {
+    if (settled) { return; }
+    settled = true;
+    if (timerId !== null) { clearTimeout(timerId); }
+    callback(status);
+}
+
+if (!document.fonts || !document.fonts.ready || typeof document.fonts.ready.then !== 'function') {
+    finish('unsupported');
+} else {
+    timerId = setTimeout(function () { finish('timeout'); }, timeoutMs);
+    Promise.resolve(document.fonts.ready).then(
+        function () { finish('loaded'); },
+        function () { finish('error'); }
+    );
+}
+"""
+
 
 def wait_ready(driver, ready_timeout_s: float = 30, fonts_timeout_ms: int = 8000) -> str:
     """等待 document.readyState 與 document.fonts.ready，回傳字型狀態。
@@ -34,21 +63,53 @@ def wait_ready(driver, ready_timeout_s: float = 30, fonts_timeout_ms: int = 8000
             f"document.readyState {ready_timeout_s} 秒內未到 complete（最後狀態：{state}）"
         )
 
-    fonts_status = driver.execute_script(
-        """
-        var callback = arguments[arguments.length - 1];
-        var timeoutMs = arguments[0];
-        if (!document.fonts) { callback('unsupported'); return; }
-        var timer = setTimeout(function () { callback('timeout'); }, timeoutMs);
-        document.fonts.ready.then(function () {
-            clearTimeout(timer);
-            callback('loaded');
-        });
-        """,
-        fonts_timeout_ms,
-    )
+    if fonts_timeout_ms <= 0:
+        raise PagePrepareError("fonts.ready timeout 必須是正數", fonts_status="error")
+    try:
+        # Selenium 的 async script timeout 是 WebDriver 邊界的有限總上限，不能只依賴頁面內 timer。
+        driver.set_script_timeout(max(1.0, fonts_timeout_ms / 1000.0 + 1.0))
+        fonts_status = driver.execute_async_script(_WAIT_FONTS_SCRIPT, fonts_timeout_ms)
+    except Exception as exc:  # noqa: BLE001 -- WebDriver 錯誤必須轉成可診斷的硬閘失敗。
+        raise PagePrepareError(f"fonts.ready 執行失敗：{exc}", fonts_status="error") from exc
     logger.info("document.fonts.ready 狀態：%s", fonts_status)
+    if fonts_status != "loaded":
+        raise PagePrepareError(
+            f"document.fonts.ready 未完成，狀態：{fonts_status}",
+            fonts_status=fonts_status,
+        )
     return fonts_status
+
+
+def collect_viewport_metrics(driver, inner: list[int]) -> dict:
+    """收集成功 metrics 所需的 outer、visual viewport 與 screen 真值。"""
+    viewport = driver.execute_script(
+        """
+        return {
+            inner_width: window.innerWidth,
+            inner_height: window.innerHeight,
+            outer_width: window.outerWidth,
+            outer_height: window.outerHeight,
+            visual_viewport: window.visualViewport ? {
+                width: window.visualViewport.width,
+                height: window.visualViewport.height,
+                scale: window.visualViewport.scale,
+                offset_left: window.visualViewport.offsetLeft,
+                offset_top: window.visualViewport.offsetTop
+            } : {supported: false},
+            screen: {
+                width: window.screen.width,
+                height: window.screen.height,
+                avail_width: window.screen.availWidth,
+                avail_height: window.screen.availHeight
+            }
+        };
+        """
+    )
+    if not isinstance(viewport, dict):
+        raise PagePrepareError("無法收集 viewport metrics")
+    viewport.setdefault("inner_width", inner[0])
+    viewport.setdefault("inner_height", inner[1])
+    return viewport
 
 
 def correct_viewport(driver, target_w: int, target_h: int, max_attempts: int = 6) -> list:

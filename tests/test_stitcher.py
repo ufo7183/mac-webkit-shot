@@ -97,6 +97,46 @@ class TestStitchFailClosed:
         canvas = _solid_image(800, 999, (0, 0, 0))
         verify_stitched_dimensions(canvas, inner_width=800, dpr=1, page_height_css=1000)
 
+    @pytest.mark.parametrize(
+        ("name", "images", "segments"),
+        [
+            (
+                "missing_tail",
+                [_solid_image(8, 4, (255, 0, 0))],
+                [_seg(0, 0, 8, 4, 8, 4)],
+            ),
+            (
+                "middle_gap",
+                [
+                    _solid_image(8, 4, (255, 0, 0)),
+                    _solid_image(8, 4, (0, 0, 255)),
+                ],
+                [_seg(0, 0, 8, 4, 8, 4), _seg(1, 6, 8, 4, 8, 4)],
+            ),
+        ],
+    )
+    def test_incomplete_capture_is_rejected_before_canvas_size_can_mask_it(
+        self, name: str, images: list[Image.Image], segments: list[dict]
+    ) -> None:
+        with pytest.raises(StitchError, match="完整|缺口|尾"):
+            stitch(images, segments, dpr=1, page_height_css=10)
+
+    def test_mismatched_image_and_segment_counts_are_rejected(self) -> None:
+        image = _solid_image(8, 10, (255, 0, 0))
+        with pytest.raises(StitchError, match="數量"):
+            stitch([image], [], dpr=1, page_height_css=10)
+
+    def test_wrong_pixel_ratio_is_rejected(self) -> None:
+        image = _solid_image(9, 10, (255, 0, 0))
+        with pytest.raises(StitchError, match="比例|尺寸"):
+            stitch([image], [_seg(0, 0, 8, 10, 9, 10)], dpr=1, page_height_css=10)
+
+    def test_segment_stall_is_rejected_in_capture(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("native_capture.stitcher.time.sleep", lambda _s: None)
+        driver = _SegmentFakeDriver(_png_bytes(800, 600), stall=True)
+        with pytest.raises(StitchError, match="停滯|前進"):
+            capture_segments(driver, page_height_css=1400, viewport_height=600, segments_dir=tmp_path, settle_ms=0)
+
 
 class _ScrollFakeDriver:
     """模擬 prescroll_until_stable 所需的 execute_script 回應。"""
@@ -125,9 +165,10 @@ class TestPrescrollOversizedPage:
 class _SegmentFakeDriver:
     """模擬 capture_segments 所需的 execute_script／get_screenshot_as_png。"""
 
-    def __init__(self, png_bytes: bytes) -> None:
+    def __init__(self, png_bytes: bytes, stall: bool = False) -> None:
         self._scroll_y = 0
         self._png_bytes = png_bytes
+        self._stall = stall
         self.hide_calls = 0
         self.restore_calls = 0
 
@@ -137,7 +178,9 @@ class _SegmentFakeDriver:
             self._scroll_y = int(match.group(1))
             return None
         if "window.scrollY" in script:
-            return self._scroll_y
+            return 0 if self._stall else self._scroll_y
+        if "document.documentElement.scrollHeight" in script:
+            return 1400
         if "innerWidth, window.innerHeight" in script:
             return [800, 600]
         if "removeProperty" in script:
