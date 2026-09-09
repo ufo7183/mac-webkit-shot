@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger("native_capture.metrics")
 
 SCHEMA_VERSION = 1
+
+
+class MetricsError(ValueError):
+    """成功 metrics 缺少可驗證真值時拋出。"""
 
 _COLLECT_HEADINGS_JS = """
 function buildSelector(el) {
@@ -106,6 +111,67 @@ def write_metrics(metrics: dict, output_dir: Path) -> Path:
     path = output_dir / "metrics.json"
     path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+def validate_success_metrics(metrics: dict) -> None:
+    """驗證成功輸出已填入 SDD §8 的環境、viewport、字型與 segments 真值。"""
+    if metrics.get("schema_version") != SCHEMA_VERSION:
+        raise MetricsError(f"schema_version 不是 {SCHEMA_VERSION}")
+
+    request = metrics.get("request", {})
+    if not request.get("final_url"):
+        raise MetricsError("success metrics 缺少 request.final_url")
+
+    environment = metrics.get("environment", {})
+    for field in ("macos_version", "safari_version", "safaridriver_version", "user_agent", "platform"):
+        if environment.get(field) in (None, ""):
+            raise MetricsError(f"success metrics 缺少 environment.{field}")
+    if not isinstance(environment.get("capabilities"), dict) or not environment["capabilities"]:
+        raise MetricsError("success metrics 缺少 environment.capabilities")
+    dpr = environment.get("device_pixel_ratio")
+    if isinstance(dpr, bool) or not isinstance(dpr, (int, float)) or not math.isfinite(dpr) or dpr < 1:
+        raise MetricsError(f"success metrics 的 device_pixel_ratio 無效：{dpr}")
+
+    viewport = metrics.get("viewport", {})
+    for field in ("inner_width", "inner_height", "outer_width", "outer_height"):
+        value = viewport.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise MetricsError(f"success metrics 的 viewport.{field} 無效：{value}")
+    if not isinstance(viewport.get("visual_viewport"), dict) or not viewport["visual_viewport"]:
+        raise MetricsError("success metrics 缺少 viewport.visual_viewport")
+    if not isinstance(viewport.get("screen"), dict) or not viewport["screen"]:
+        raise MetricsError("success metrics 缺少 viewport.screen")
+
+    document = metrics.get("document", {})
+    if not isinstance(document.get("title"), str) or not isinstance(document.get("html_class_name"), str):
+        raise MetricsError("success metrics 缺少 document title 或 html class 真值")
+    if document.get("ready_state") != "complete" or document.get("fonts_status") != "loaded":
+        raise MetricsError("success metrics 的 document.ready_state 或 fonts_status 未完成")
+    for field in ("scroll_width", "scroll_height"):
+        value = document.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise MetricsError(f"success metrics 的 document.{field} 無效：{value}")
+
+    stitch = metrics.get("stitch", {})
+    segments = stitch.get("segments")
+    if stitch.get("status") != "pass" or not isinstance(segments, list) or not segments:
+        raise MetricsError("success metrics 缺少通過的 segments")
+    if stitch.get("segment_count") != len(segments):
+        raise MetricsError("success metrics 的 segment_count 與 segments 不一致")
+    for index, segment in enumerate(segments):
+        for field in (
+            "actual_scroll_y",
+            "inner_width",
+            "inner_height",
+            "png_width",
+            "png_height",
+        ):
+            if field not in segment or segment[field] is None:
+                raise MetricsError(f"success metrics 的 segment[{index}] 缺少 {field}")
+    if stitch.get("final_png_width", 0) <= 0 or stitch.get("final_png_height", 0) <= 0:
+        raise MetricsError("success metrics 缺少 final PNG 尺寸")
+    if not isinstance(metrics.get("headings"), list):
+        raise MetricsError("success metrics 缺少 headings")
 
 
 def collect_headings(driver) -> list:

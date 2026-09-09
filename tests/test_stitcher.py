@@ -150,7 +150,7 @@ class TestStitchFailClosed:
     ) -> None:
         monkeypatch.setattr("native_capture.stitcher.time.sleep", lambda _s: None)
         monkeypatch.setattr("native_capture.stitcher.MAX_SEGMENTS", 2)
-        driver = _SegmentFakeDriver(_png_bytes(800, 600))
+        driver = _SegmentFakeDriver(_png_bytes(800, 600), scroll_height=2000)
         with pytest.raises(StitchError, match="segment 上限"):
             capture_segments(driver, page_height_css=2000, viewport_height=600, segments_dir=tmp_path, settle_ms=0)
 
@@ -182,11 +182,18 @@ class TestPrescrollOversizedPage:
 class _SegmentFakeDriver:
     """模擬 capture_segments 所需的 execute_script／get_screenshot_as_png。"""
 
-    def __init__(self, png_bytes: bytes, stall: bool = False, height_after_first: int | None = None) -> None:
+    def __init__(
+        self,
+        png_bytes: bytes,
+        stall: bool = False,
+        height_after_first: int | None = None,
+        scroll_height: int = 1400,
+    ) -> None:
         self._scroll_y = 0
         self._png_bytes = png_bytes
         self._stall = stall
         self._height_after_first = height_after_first
+        self._scroll_height = scroll_height
         self._height_reads = 0
         self.hide_calls = 0
         self.restore_calls = 0
@@ -202,7 +209,7 @@ class _SegmentFakeDriver:
             self._height_reads += 1
             if self._height_after_first is not None and self._height_reads > 1:
                 return self._height_after_first
-            return 1400
+            return self._scroll_height
         if "innerWidth, window.innerHeight" in script:
             return [800, 600]
         if "removeProperty" in script:

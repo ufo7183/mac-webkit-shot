@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 import uuid
@@ -44,27 +45,28 @@ def run(output_dir: Path | None = None) -> int:
 
     metrics = metrics_mod.new_metrics_skeleton(request_id, raw_url)
 
+    driver = None
+    primary_error: Exception | None = None
+    cleanup_errors: list[str] = []
     try:
         validate_url(raw_url)
-    except UrlValidationError as exc:
-        return _fail(f"URL 驗證失敗：{exc}", metrics, output_dir)
+        logger.info("目標網址（已遮罩）：%s", mask_url_for_log(raw_url))
 
-    logger.info("目標網址（已遮罩）：%s", mask_url_for_log(raw_url))
-
-    driver = safari_session.create_driver()
-    try:
+        driver = safari_session.create_driver()
         caps = safari_session.assert_safari_capabilities(driver)
         metrics["environment"]["capabilities"] = caps
 
         driver.get(raw_url)
-        fonts_status = page_prepare.wait_ready(driver)
         metrics["request"]["final_url"] = driver.current_url
+        fonts_status = page_prepare.wait_ready(driver)
+        metrics["document"]["fonts_status"] = fonts_status
 
         platform = safari_session.assert_macos_platform(driver)
         metrics["environment"]["platform"] = platform
         metrics["environment"].update(safari_session.collect_environment_basics(driver))
 
         inner = page_prepare.correct_viewport(driver, viewport_width, viewport_height)
+        metrics["viewport"] = page_prepare.collect_viewport_metrics(driver, inner)
 
         metrics["document"]["html_class_name"] = driver.execute_script(
             "return document.documentElement.className"
@@ -77,8 +79,8 @@ def run(output_dir: Path | None = None) -> int:
 
         dpr = driver.execute_script("return window.devicePixelRatio")
         metrics["environment"]["device_pixel_ratio"] = dpr
-        if dpr < 1:
-            return _fail(f"window.devicePixelRatio 異常：{dpr}", metrics, output_dir)
+        if isinstance(dpr, bool) or not isinstance(dpr, (int, float)) or not math.isfinite(dpr) or dpr < 1:
+            raise stitcher.StitchError(f"window.devicePixelRatio 異常：{dpr}")
 
         page_prepare.freeze_dynamics(driver)
         page_height_css = page_prepare.prescroll_until_stable(driver, viewport_height)
@@ -91,7 +93,6 @@ def run(output_dir: Path | None = None) -> int:
                 "fonts_status": fonts_status,
             }
         )
-        metrics["viewport"] = {"inner_width": inner[0], "inner_height": inner[1]}
 
         segments, images, fixed_sticky_records = stitcher.capture_segments(
             driver, page_height_css, viewport_height, segments_dir, settle_ms
@@ -100,10 +101,14 @@ def run(output_dir: Path | None = None) -> int:
         metrics["stitch"]["segment_count"] = len(segments)
         metrics["stitch"]["fixed_sticky_hidden"] = fixed_sticky_records
 
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if not images:
+            raise stitcher.StitchError("擷取沒有回傳任何圖片")
+        images[0].save(output_dir / "safari-first-viewport.png")
+
         full_page = stitcher.stitch(images, segments, dpr, page_height_css)
         stitcher.verify_stitched_dimensions(full_page, inner[0], dpr, page_height_css)
 
-        output_dir.mkdir(parents=True, exist_ok=True)
         full_page_path = output_dir / "safari-full-page.png"
         full_page.save(full_page_path)
 
@@ -113,13 +118,30 @@ def run(output_dir: Path | None = None) -> int:
         metrics["headings"] = metrics_mod.collect_headings(driver)
 
         preview_bundle_mod.generate_preview_bundle(full_page_path, preview_dir, output_dir)
+        preview_bundle_mod.validate_preview_bundle(output_dir, preview_dir)
+        metrics_mod.validate_success_metrics(metrics)
 
     except Exception as exc:  # noqa: BLE001 -- 任何硬閘失敗都要走同一條 fail-closed 路徑。
-        return _fail(str(exc), metrics, output_dir)
+        primary_error = exc
     finally:
-        driver.quit()
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception as exc:  # noqa: BLE001 -- cleanup 不能覆蓋原始失敗原因。
+                if primary_error is None:
+                    primary_error = RuntimeError(f"driver.quit 失敗：{exc}")
+                else:
+                    cleanup_errors.append(f"driver.quit 失敗：{exc}")
 
-    metrics_mod.write_metrics(metrics, output_dir)
+    if primary_error is not None:
+        if hasattr(primary_error, "fonts_status"):
+            metrics["document"]["fonts_status"] = primary_error.fonts_status
+        return _fail(str(primary_error), metrics, output_dir, cleanup_errors)
+
+    try:
+        metrics_mod.write_metrics(metrics, output_dir)
+    except Exception as exc:  # noqa: BLE001 -- metrics 落檔失敗也必須回傳非零。
+        return _fail(f"metrics 落檔失敗：{exc}", metrics, output_dir)
     logger.info(
         "擷取成功：full-page=%dx%d segments=%d",
         full_page.width, full_page.height, len(segments),
@@ -127,12 +149,19 @@ def run(output_dir: Path | None = None) -> int:
     return 0
 
 
-def _fail(reason: str, metrics: dict, output_dir: Path) -> int:
+def _fail(
+    reason: str, metrics: dict, output_dir: Path, additional_reasons: list[str] | None = None
+) -> int:
     """記錄硬閘失敗原因，落 metrics.json（status=fail），回傳非零 exit code。"""
     logger.error("硬閘失敗：%s", reason)
     metrics.setdefault("stitch", {})["status"] = "fail"
-    metrics.setdefault("stitch", {}).setdefault("warnings", []).append(reason)
-    metrics_mod.write_metrics(metrics, output_dir)
+    warnings = metrics.setdefault("stitch", {}).setdefault("warnings", [])
+    warnings.append(reason)
+    warnings.extend(additional_reasons or [])
+    try:
+        metrics_mod.write_metrics(metrics, output_dir)
+    except Exception as exc:  # noqa: BLE001 -- 原始失敗仍以非零 exit code 回傳。
+        logger.error("失敗 metrics 落檔也失敗：%s", exc)
     return 1
 
 
