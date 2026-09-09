@@ -92,5 +92,6 @@ def test_wait_ready_rejects_timeout_error_and_unsupported_status(mode: str) -> N
     with pytest.raises(PagePrepareError, match="字型|fonts.ready") as exc_info:
         wait_ready(driver, ready_timeout_s=1, fonts_timeout_ms=10)
 
-    assert exc_info.value.fonts_status == ("timeout" if mode == "timeout" else mode)
+    expected_status = "timeout" if mode == "timeout" else ("unsupported" if mode == "unsupported" else "error")
+    assert exc_info.value.fonts_status == expected_status
     assert driver.callback_count == 1

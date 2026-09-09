@@ -137,6 +137,23 @@ class TestStitchFailClosed:
         with pytest.raises(StitchError, match="停滯|前進"):
             capture_segments(driver, page_height_css=1400, viewport_height=600, segments_dir=tmp_path, settle_ms=0)
 
+    def test_page_height_change_is_rejected_during_capture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("native_capture.stitcher.time.sleep", lambda _s: None)
+        driver = _SegmentFakeDriver(_png_bytes(800, 600), height_after_first=1500)
+        with pytest.raises(StitchError, match="頁高改變"):
+            capture_segments(driver, page_height_css=1400, viewport_height=600, segments_dir=tmp_path, settle_ms=0)
+
+    def test_segment_limit_is_rejected_before_claiming_bottom(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("native_capture.stitcher.time.sleep", lambda _s: None)
+        monkeypatch.setattr("native_capture.stitcher.MAX_SEGMENTS", 2)
+        driver = _SegmentFakeDriver(_png_bytes(800, 600))
+        with pytest.raises(StitchError, match="segment 上限"):
+            capture_segments(driver, page_height_css=2000, viewport_height=600, segments_dir=tmp_path, settle_ms=0)
+
 
 class _ScrollFakeDriver:
     """模擬 prescroll_until_stable 所需的 execute_script 回應。"""
@@ -165,10 +182,12 @@ class TestPrescrollOversizedPage:
 class _SegmentFakeDriver:
     """模擬 capture_segments 所需的 execute_script／get_screenshot_as_png。"""
 
-    def __init__(self, png_bytes: bytes, stall: bool = False) -> None:
+    def __init__(self, png_bytes: bytes, stall: bool = False, height_after_first: int | None = None) -> None:
         self._scroll_y = 0
         self._png_bytes = png_bytes
         self._stall = stall
+        self._height_after_first = height_after_first
+        self._height_reads = 0
         self.hide_calls = 0
         self.restore_calls = 0
 
@@ -180,6 +199,9 @@ class _SegmentFakeDriver:
         if "window.scrollY" in script:
             return 0 if self._stall else self._scroll_y
         if "document.documentElement.scrollHeight" in script:
+            self._height_reads += 1
+            if self._height_after_first is not None and self._height_reads > 1:
+                return self._height_after_first
             return 1400
         if "innerWidth, window.innerHeight" in script:
             return [800, 600]
