@@ -18,7 +18,7 @@ from native_capture import page_prepare
 from native_capture import preview_bundle as preview_bundle_mod
 from native_capture import safari_session
 from native_capture import stitcher
-from native_capture.url_validation import UrlValidationError, mask_url_for_log, validate_url
+from native_capture.url_validation import mask_url_for_log, validate_url
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("native_capture.cli")

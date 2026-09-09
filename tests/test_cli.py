@@ -10,7 +10,6 @@ import pytest
 from PIL import Image
 
 from native_capture import cli, page_prepare, preview_bundle, safari_session
-from native_capture.stitcher import StitchError
 
 
 def _png_bytes(width: int, height: int, color: tuple[int, int, int]) -> bytes:
