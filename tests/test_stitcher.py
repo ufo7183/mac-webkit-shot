@@ -57,6 +57,16 @@ class TestStitchTailOverlap:
         assert canvas.getpixel((10, 999)) == (0, 255, 0)
         assert canvas.getpixel((10, 10)) == (255, 0, 0)
 
+    def test_tail_crop_is_allowed_when_coverage_reaches_page_end(self) -> None:
+        img0 = _solid_image(800, 600, (255, 0, 0))
+        img1 = _solid_image(800, 600, (0, 255, 0))
+        segments = [_seg(0, 0, 800, 600, 800, 600), _seg(1, 400, 800, 600, 800, 600)]
+
+        canvas = stitch([img0, img1], segments, dpr=1, page_height_css=900)
+
+        assert canvas.size == (800, 900)
+        assert canvas.getpixel((10, 899)) == (0, 255, 0)
+
 
 class TestStitchDpr2:
     def test_dpr2_scales_canvas_and_positions(self) -> None:

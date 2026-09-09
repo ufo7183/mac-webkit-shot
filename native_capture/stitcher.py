@@ -35,7 +35,11 @@ def _validate_segment_inputs(
         raise StitchError("無任何 segment 可供拼接")
     if isinstance(dpr, bool) or not isinstance(dpr, (int, float)) or not math.isfinite(dpr) or dpr < 1:
         raise StitchError(f"DPR 無效：{dpr}")
-    if isinstance(page_height_css, bool) or not isinstance(page_height_css, (int, float)):
+    if (
+        isinstance(page_height_css, bool)
+        or not isinstance(page_height_css, (int, float))
+        or not math.isfinite(float(page_height_css))
+    ):
         raise StitchError(f"頁高無效：{page_height_css}")
     if page_height_css <= 0:
         raise StitchError(f"頁高必須是正數：{page_height_css}")
@@ -45,7 +49,12 @@ def _validate_segment_inputs(
         expected_inner_width = first["inner_width"]
     except (KeyError, TypeError) as exc:
         raise StitchError("segment 缺少 viewport 尺寸資料") from exc
-    if expected_inner_width <= 0:
+    if (
+        isinstance(expected_inner_width, bool)
+        or not isinstance(expected_inner_width, (int, float))
+        or not math.isfinite(float(expected_inner_width))
+        or expected_inner_width <= 0
+    ):
         raise StitchError(f"segment inner_width 無效：{expected_inner_width}")
     expected_width_px = round(expected_inner_width * dpr)
     previous_actual_y: float | None = None

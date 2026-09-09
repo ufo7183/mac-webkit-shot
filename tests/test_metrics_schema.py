@@ -7,7 +7,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from native_capture.metrics import collect_headings, new_metrics_skeleton, write_metrics
+import pytest
+
+from native_capture.metrics import (
+    MetricsError,
+    collect_headings,
+    new_metrics_skeleton,
+    validate_success_metrics,
+    write_metrics,
+)
 
 
 class TestNewMetricsSkeleton:
@@ -67,3 +75,64 @@ class TestCollectHeadings:
     def test_defaults_to_empty_list_when_none(self) -> None:
         driver = _HeadingsFakeDriver(None)
         assert collect_headings(driver) == []
+
+
+def _complete_fixture_metrics() -> dict:
+    metrics = new_metrics_skeleton("fixture-req", "https://fixture.example/complete")
+    metrics["request"]["final_url"] = "https://fixture.example/complete"
+    metrics["environment"] = {
+        "macos_version": "fixture-macOS-15",
+        "safari_version": "fixture-Safari-18",
+        "safaridriver_version": "fixture-safaridriver-18",
+        "capabilities": {"browserName": "safari"},
+        "user_agent": "fixture-user-agent",
+        "platform": "MacIntel",
+        "max_touch_points": 0,
+        "device_pixel_ratio": 1,
+    }
+    metrics["viewport"] = {
+        "inner_width": 8,
+        "inner_height": 4,
+        "outer_width": 8,
+        "outer_height": 4,
+        "visual_viewport": {"width": 8, "height": 4},
+        "screen": {"width": 8, "height": 4},
+    }
+    metrics["document"] = {
+        "title": "Fixture page",
+        "scroll_width": 8,
+        "scroll_height": 10,
+        "ready_state": "complete",
+        "fonts_status": "loaded",
+        "html_class_name": "fixture-page",
+    }
+    metrics["stitch"] = {
+        "status": "pass",
+        "segment_count": 1,
+        "segments": [
+            {
+                "actual_scroll_y": 0,
+                "inner_width": 8,
+                "inner_height": 10,
+                "png_width": 8,
+                "png_height": 10,
+            }
+        ],
+        "fixed_sticky_hidden": [],
+        "final_png_width": 8,
+        "final_png_height": 10,
+        "warnings": [],
+    }
+    return metrics
+
+
+class TestValidateSuccessMetrics:
+    def test_accepts_explicit_fixture_truth_values(self) -> None:
+        validate_success_metrics(_complete_fixture_metrics())
+
+    def test_rejects_empty_success_version(self) -> None:
+        metrics = _complete_fixture_metrics()
+        metrics["environment"]["safari_version"] = None
+
+        with pytest.raises(MetricsError, match="safari_version"):
+            validate_success_metrics(metrics)
